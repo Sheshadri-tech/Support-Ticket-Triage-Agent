@@ -46,3 +46,6 @@ class TriageResult(BaseModel):
     human_review: bool
 
     reasoning: str
+    
+    priority_score: int = 0
+    priority_level: str = "Low"

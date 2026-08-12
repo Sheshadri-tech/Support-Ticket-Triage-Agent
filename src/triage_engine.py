@@ -1,34 +1,17 @@
-import os
 import json
+import time
 
-from dotenv import load_dotenv
 from groq import Groq
 
 from src.ticket_model import SupportTicket, TriageResult
+from src.logger import logger
+from src.config import GROQ_API_KEY, GROQ_MODEL, AI_TEMPERATURE
 
+from src.priority import calculate_priority
 
-# ============================================================
-# LOAD ENVIRONMENT VARIABLES
-# ============================================================
+# Create Groq client
+client = Groq(api_key=GROQ_API_KEY)
 
-load_dotenv()
-
-api_key = os.getenv("GROQ_API_KEY")
-
-if not api_key:
-    raise ValueError("GROQ_API_KEY is not found in the .env file.")
-
-
-# ============================================================
-# CREATE GROQ CLIENT
-# ============================================================
-
-client = Groq(api_key=api_key)
-
-
-# ============================================================
-# AI SYSTEM PROMPT
-# ============================================================
 
 SYSTEM_PROMPT = """
 You are an expert Support Ticket Triage Agent.
@@ -44,7 +27,6 @@ For every ticket, determine:
 5. human_review
 6. reasoning
 
-
 CATEGORY OPTIONS:
 
 - Account Access
@@ -55,14 +37,12 @@ CATEGORY OPTIONS:
 - Security
 - Other
 
-
 URGENCY OPTIONS:
 
 - Low
 - Medium
 - High
 - Critical
-
 
 ROUTING TEAM OPTIONS:
 
@@ -72,7 +52,6 @@ ROUTING TEAM OPTIONS:
 - Product Support
 - Security Team
 - General Support
-
 
 RULES:
 
@@ -90,27 +69,26 @@ RULES:
 - Feature suggestions should normally be classified as Feature Request.
 - Do not invent information that is not present in the ticket.
 
-
 Return ONLY valid JSON.
 
 The JSON must contain exactly these fields:
 
 {
-    "category": "...",
-    "urgency": "...",
-    "confidence": 0.0,
-    "routing_team": "...",
-    "human_review": false,
-    "reasoning": "..."
+"category": "...",
+"urgency": "...",
+"confidence": 0.0,
+"routing_team": "...",
+"human_review": false,
+"reasoning": "..."
 }
 """
 
 
-# ============================================================
-# TRIAGE A SINGLE SUPPORT TICKET
-# ============================================================
-
 def triage_ticket(ticket: SupportTicket) -> TriageResult:
+
+    logger.info(
+        f"Starting triage for ticket {ticket.ticket_id}"
+    )
 
     user_prompt = f"""
 Analyze the following support ticket.
@@ -127,45 +105,96 @@ Body:
 Return the triage result as JSON.
 """
 
-    # ========================================================
-    # SEND TICKET TO GROQ
-    # ========================================================
-
-    response = client.chat.completions.create(
-        model="llama-3.3-70b-versatile",
-        messages=[
-            {
-                "role": "system",
-                "content": SYSTEM_PROMPT
-            },
-            {
-                "role": "user",
-                "content": user_prompt
-            }
-        ],
-        temperature=0.1,
-        response_format={"type": "json_object"}
+    logger.info(
+        f"Sending ticket {ticket.ticket_id} to AI model"
     )
 
-    # ========================================================
-    # GET AI RESPONSE
-    # ========================================================
+    # Retry configuration
+    max_retries = 3
 
+    # Retry loop
+    for attempt in range(1, max_retries + 1):
+
+        try:
+            logger.info(
+                f"AI request attempt {attempt}/{max_retries} "
+                f"for ticket {ticket.ticket_id}"
+            )
+
+            response = client.chat.completions.create(
+                model=GROQ_MODEL,
+                messages=[
+                    {
+                        "role": "system",
+                        "content": SYSTEM_PROMPT
+                    },
+                    {
+                        "role": "user",
+                        "content": user_prompt
+                    }
+                ],
+                temperature=AI_TEMPERATURE
+            )
+
+            logger.info(
+                f"AI request successful for ticket "
+                f"{ticket.ticket_id} on attempt {attempt}"
+            )
+
+            # API call succeeded
+            break
+
+        except Exception as e:
+
+            logger.warning(
+                f"AI request failed for ticket "
+                f"{ticket.ticket_id} on attempt "
+                f"{attempt}/{max_retries}: {e}"
+            )
+
+            # All retries exhausted
+            if attempt == max_retries:
+
+                logger.error(
+                    f"AI request failed permanently for ticket "
+                    f"{ticket.ticket_id} after "
+                    f"{max_retries} attempts"
+                )
+
+                raise RuntimeError(
+                    f"AI API request failed for ticket "
+                    f"{ticket.ticket_id} after "
+                    f"{max_retries} attempts: {e}"
+                ) from e
+
+            # Exponential backoff
+            #
+            # Attempt 1 fails -> wait 1 second
+            # Attempt 2 fails -> wait 2 seconds
+            delay = 2 ** (attempt - 1)
+
+            logger.info(
+                f"Waiting {delay} seconds before retrying "
+                f"ticket {ticket.ticket_id}"
+            )
+
+            time.sleep(delay)
+
+    # Get AI response
     raw_response = response.choices[0].message.content
 
-    if not raw_response:
-        raise ValueError("AI returned an empty response.")
+    logger.info(
+        f"AI response received for ticket {ticket.ticket_id}"
+    )
 
+    # Clean Markdown code fences if AI returns JSON
+    # inside ```json ... ```
     raw_response = raw_response.strip()
-
-    # ========================================================
-    # CLEAN POSSIBLE MARKDOWN CODE FENCES
-    # ========================================================
 
     if raw_response.startswith("```json"):
         raw_response = raw_response[7:]
 
-    elif raw_response.startswith("```"):
+    if raw_response.startswith("```"):
         raw_response = raw_response[3:]
 
     if raw_response.endswith("```"):
@@ -173,37 +202,79 @@ Return the triage result as JSON.
 
     raw_response = raw_response.strip()
 
-    # ========================================================
-    # DEBUG OUTPUT
-    # ========================================================
+    # Check for empty response
+    if not raw_response:
+        raise ValueError(
+            f"AI returned an empty response for ticket "
+            f"{ticket.ticket_id}."
+        )
 
     print("\nRAW AI RESPONSE:")
     print(raw_response)
 
-    # ========================================================
-    # CONVERT JSON STRING TO PYTHON DICTIONARY
-    # ========================================================
-
+    # Parse JSON
     try:
         result_data = json.loads(raw_response)
 
-    except json.JSONDecodeError as error:
+    except json.JSONDecodeError as e:
         raise ValueError(
-            f"AI returned invalid JSON: {error}\n"
-            f"Raw response: {raw_response}"
+            f"AI returned invalid JSON for ticket "
+            f"{ticket.ticket_id}: {e}"
+        ) from e
+
+    # Check that the AI returned an object
+    if not isinstance(result_data, dict):
+        raise ValueError(
+            f"AI response for ticket {ticket.ticket_id} "
+            f"must be a JSON object."
         )
 
-    # ========================================================
-    # VALIDATE AI RESULT USING PYDANTIC
-    # ========================================================
+    # Validate required fields
+    required_fields = {
+        "category",
+        "urgency",
+        "confidence",
+        "routing_team",
+        "human_review",
+        "reasoning"
+    }
 
-    # Enforce human review when confidence is low
-    if result_data.get("confidence", 0.0) < 0.70:
-        result_data["human_review"] = True
+    missing_fields = required_fields - result_data.keys()
 
-    result = TriageResult(
-        ticket_id=ticket.ticket_id,
-        **result_data
+    if missing_fields:
+        raise ValueError(
+            f"AI response for ticket {ticket.ticket_id} "
+            f"is missing fields: {sorted(missing_fields)}"
+        )
+
+    # Create validated Pydantic result
+    try:
+        priority_score, priority_level = calculate_priority(
+            urgency=result_data["urgency"],
+            confidence=result_data["confidence"],
+            human_review=result_data["human_review"]
+        )
+
+        result = TriageResult(
+            ticket_id=ticket.ticket_id,
+            priority_score=priority_score,
+            priority_level=priority_level,
+            **result_data
+        )
+
+    except Exception as e:
+        raise ValueError(
+            f"AI response validation failed for ticket "
+            f"{ticket.ticket_id}: {e}"
+        ) from e
+
+    logger.info(
+        f"Triage completed for ticket {ticket.ticket_id}: "
+        f"category={result.category}, "
+        f"urgency={result.urgency}, "
+        f"confidence={result.confidence}, "
+        f"priority_score={result.priority_score}, "
+        f"priority_level={result.priority_level}"
     )
 
     return result
