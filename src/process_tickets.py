@@ -1,8 +1,8 @@
 import json
 from pathlib import Path
 
-from ticket_model import SupportTicket
-from triage_engine import triage_ticket
+from src.ticket_model import SupportTicket
+from src.triage_engine import triage_ticket
 
 
 # Project directories

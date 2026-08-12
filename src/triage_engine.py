@@ -4,7 +4,7 @@ import json
 from dotenv import load_dotenv
 from groq import Groq
 
-from ticket_model import SupportTicket, TriageResult
+from src.ticket_model import SupportTicket, TriageResult
 
 
 # ============================================================
@@ -196,6 +196,10 @@ Return the triage result as JSON.
     # ========================================================
     # VALIDATE AI RESULT USING PYDANTIC
     # ========================================================
+
+    # Enforce human review when confidence is low
+    if result_data.get("confidence", 0.0) < 0.70:
+        result_data["human_review"] = True
 
     result = TriageResult(
         ticket_id=ticket.ticket_id,
