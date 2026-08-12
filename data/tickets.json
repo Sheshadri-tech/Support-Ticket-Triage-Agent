@@ -1,0 +1,27 @@
+[
+  {
+    "ticket_id": "T001",
+    "subject": "Unable to login to my account",
+    "body": "I have tried several times to log in but my password is not being accepted. I need access to my account urgently."
+  },
+  {
+    "ticket_id": "T002",
+    "subject": "Payment was charged twice",
+    "body": "I purchased the subscription yesterday and my bank account shows two identical charges."
+  },
+  {
+    "ticket_id": "T003",
+    "subject": "Application crashes when uploading PDF",
+    "body": "Every time I upload a PDF larger than 10 MB, the application crashes and I cannot complete my work."
+  },
+  {
+    "ticket_id": "T004",
+    "subject": "How can I change my profile name?",
+    "body": "I recently changed my name and would like to know how to update it in my account."
+  },
+  {
+    "ticket_id": "T005",
+    "subject": "Something is wrong",
+    "body": "It is not working properly. Please fix it."
+  }
+]
